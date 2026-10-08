@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using MiniInspector;
 
@@ -52,4 +53,57 @@ app.MapPost("/api/config", async (HttpRequest req, AppConfig cfg) =>
     }, json);
 });
 
-app.Run();
+app.MapPost("/api/restart", (IHostApplicationLifetime lifetime) =>
+{
+    _ = Task.Run(async () =>
+    {
+        await Task.Delay(500);
+        SpawnSelf(app.Environment.ContentRootPath);
+        lifetime.StopApplication();
+    });
+    return Results.Json(new { ok = true, action = "restart" }, json);
+});
+
+app.MapPost("/api/shutdown", (IHostApplicationLifetime lifetime) =>
+{
+    _ = Task.Run(async () =>
+    {
+        await Task.Delay(500);
+        lifetime.StopApplication();
+    });
+    return Results.Json(new { ok = true, action = "shutdown" }, json);
+});
+
+for (var attempt = 0; ; attempt++)
+{
+    try
+    {
+        app.Run();
+        break;
+    }
+    catch (IOException) when (attempt < 5)
+    {
+        // port still held by the previous instance during restart
+        Thread.Sleep(1000);
+    }
+}
+
+static void SpawnSelf(string workingDirectory)
+{
+    var processPath = Environment.ProcessPath!;
+    var cmdArgs = Environment.GetCommandLineArgs();
+    var isDotnetHost = Path.GetFileNameWithoutExtension(processPath)
+        .Equals("dotnet", StringComparison.OrdinalIgnoreCase);
+
+    var psi = new ProcessStartInfo
+    {
+        FileName = processPath,
+        WorkingDirectory = workingDirectory,
+        UseShellExecute = false,
+        CreateNoWindow = true,
+        WindowStyle = ProcessWindowStyle.Hidden
+    };
+    foreach (var arg in cmdArgs.Skip(isDotnetHost ? 0 : 1))
+        psi.ArgumentList.Add(arg);
+    Process.Start(psi);
+}
