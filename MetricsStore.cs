@@ -16,16 +16,18 @@ public record Sample(
 
 public sealed class MetricsStore
 {
+    private const int MaxCount = 100_000;
+
     private readonly object _gate = new();
     private readonly Queue<Sample> _samples = new();
-    private readonly int _capacity;
+    private readonly AppConfig _config;
     private Sample? _latest;
 
     public DateTimeOffset StartedAt { get; } = DateTimeOffset.UtcNow;
 
-    public MetricsStore(IConfiguration config)
+    public MetricsStore(AppConfig config)
     {
-        _capacity = Math.Max(60, config.GetValue("Metrics:CapacitySeconds", 3600));
+        _config = config;
     }
 
     public void Add(Sample sample)
@@ -33,7 +35,9 @@ public sealed class MetricsStore
         lock (_gate)
         {
             _samples.Enqueue(sample);
-            while (_samples.Count > _capacity) _samples.Dequeue();
+            var cutoff = sample.Ts - _config.RetentionSeconds;
+            while (_samples.Count > 0 && _samples.Peek().Ts < cutoff) _samples.Dequeue();
+            while (_samples.Count > MaxCount) _samples.Dequeue();
             _latest = sample;
         }
     }

@@ -4,9 +4,8 @@ namespace MiniInspector;
 
 public sealed class CollectorService : BackgroundService
 {
-    private static readonly TimeSpan Tick = TimeSpan.FromSeconds(1);
-
     private readonly MetricsStore _store;
+    private readonly AppConfig _config;
     private readonly ILogger<CollectorService> _log;
     private readonly UpdateVisitor _visitor = new();
 
@@ -34,9 +33,10 @@ public sealed class CollectorService : BackgroundService
     public string GpuName { get; private set; } = "";
     public bool GpuPresent => _gpuLoad is not null;
 
-    public CollectorService(MetricsStore store, ILogger<CollectorService> log)
+    public CollectorService(MetricsStore store, AppConfig config, ILogger<CollectorService> log)
     {
         _store = store;
+        _config = config;
         _log = log;
     }
 
@@ -51,8 +51,7 @@ public sealed class CollectorService : BackgroundService
             _log.LogWarning(ex, "Hardware init failed; will retry every tick");
         }
 
-        using var timer = new PeriodicTimer(Tick);
-        while (await timer.WaitForNextTickAsync(stoppingToken))
+        while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
@@ -66,6 +65,15 @@ public sealed class CollectorService : BackgroundService
                     _warned = true;
                     _log.LogWarning(ex, "Collection failed");
                 }
+            }
+
+            try
+            {
+                await Task.Delay(_config.IntervalMs, stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
             }
         }
     }
