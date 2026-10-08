@@ -8,6 +8,48 @@ let gpuPresent = false;
 let cfgLoaded = false;
 let renderMs = 2000;
 
+// viewport (shared across all charts)
+let viewSpan = null;  // seconds visible; null = auto (full range)
+let viewEnd = null;   // right edge timestamp
+let follow = true;    // snap to latest sample
+
+function viewRange() {
+  const n = samples.length;
+  if (n < 2) return { first: 0, last: 0, full: 3600 };
+  const first = samples[0].ts, last = samples[n - 1].ts;
+  return { first, last, full: Math.max(10, last - first) };
+}
+function clampSpan(s) {
+  const r = viewRange();
+  return Math.min(Math.max(10, s), Math.max(10, r.full));
+}
+function clampEnd(e) {
+  const r = viewRange();
+  if (!r.last) return e;
+  const lo = Math.min(r.first + viewSpan, r.last);
+  return Math.min(Math.max(e, lo), r.last);
+}
+function lowerBound(ts) {
+  let lo = 0, hi = samples.length;
+  while (lo < hi) {
+    const m = (lo + hi) >> 1;
+    if (samples[m].ts < ts) lo = m + 1; else hi = m;
+  }
+  return lo;
+}
+function resetView() {
+  viewSpan = null;
+  follow = true;
+  $("back-live").hidden = true;
+  drawAll();
+}
+let drawPending = false;
+function requestDraw() {
+  if (drawPending) return;
+  drawPending = true;
+  requestAnimationFrame(() => { drawPending = false; drawAll(); });
+}
+
 document.documentElement.dataset.theme = localStorage.getItem("mini.theme") || "dark";
 $("theme").onclick = () => {
   const t = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
@@ -94,6 +136,16 @@ function rgba(color, a) {
   return color;
 }
 
+function chipPath(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
 function draw(canvas, lines, opts) {
   const dpr = window.devicePixelRatio || 1;
   const w = canvas.clientWidth, h = canvas.clientHeight;
@@ -105,6 +157,7 @@ function draw(canvas, lines, opts) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const css = getComputedStyle(document.documentElement);
   const muted = css.getPropertyValue("--muted").trim();
+  const border = css.getPropertyValue("--border").trim();
   ctx.clearRect(0, 0, w, h);
 
   const n = samples.length;
@@ -115,75 +168,151 @@ function draw(canvas, lines, opts) {
     return;
   }
 
-  const t0 = samples[0].ts, t1 = samples[n - 1].ts;
-  const span = Math.max(1, t1 - t0);
-  const step = Math.max(1, Math.floor(n / w));
+  if (follow) viewEnd = samples[n - 1].ts;
+  if (viewSpan == null) viewSpan = Math.max(10, samples[n - 1].ts - samples[0].ts);
+  viewSpan = clampSpan(viewSpan);
+  viewEnd = clampEnd(viewEnd);
+  const t0 = viewEnd - viewSpan, t1 = viewEnd;
+
+  const start = Math.max(0, lowerBound(t0) - 1);
+  const end = Math.min(n - 1, lowerBound(t1 + 1));
+  const step = Math.max(1, Math.floor((end - start) / w) || 1);
 
   let max = opts.max;
   if (max == null) {
     max = 1;
-    for (const line of lines) for (let i = 0; i < n; i += step) if (line.data[i] > max) max = line.data[i];
+    for (const line of lines) for (let i = start; i <= end; i += step) if (line.data[i] > max) max = line.data[i];
     max *= 1.15;
   }
 
-  ctx.strokeStyle = css.getPropertyValue("--border");
-  ctx.lineWidth = 1;
-  for (let i = 1; i < 4; i++) {
-    const y = (h * i) / 4;
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+  const padL = 48, padR = 10, padT = 8, padB = 18;
+  const pw = w - padL - padR, ph = h - padT - padB;
+  if (pw < 40 || ph < 20) return;
+  const fmtY = opts.fmt || (v => v.toFixed(0));
+
+  // y axis: grid + value ticks
+  ctx.font = "10px sans-serif";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  for (let i = 0; i <= 4; i++) {
+    const gy = padT + (ph * i) / 4;
+    ctx.strokeStyle = border;
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(padL, gy); ctx.lineTo(w - padR, gy); ctx.stroke();
+    ctx.fillStyle = muted;
+    ctx.fillText(fmtY(max * (1 - i / 4)), 4, gy);
+  }
+
+  // x axis: time ticks
+  const p2 = v => String(v).padStart(2, "0");
+  const fmtTime = ts => {
+    const d = new Date(ts * 1000);
+    return viewSpan <= 600
+      ? `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`
+      : `${p2(d.getHours())}:${p2(d.getMinutes())}`;
+  };
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  for (let i = 0; i <= 4; i++) {
+    const tx = padL + (pw * i) / 4;
+    const cx = Math.max(padL + 22, Math.min(w - padR - 22, tx));
+    ctx.fillStyle = muted;
+    ctx.fillText(fmtTime(t0 + (viewSpan * i) / 4), cx, padT + ph + 5);
   }
 
   const point = (i, data) => [
-    ((samples[i].ts - t0) / span) * w,
-    h - Math.min(1, Math.max(0, data[i] / max)) * (h - 4) - 2
+    padL + ((samples[i].ts - t0) / viewSpan) * pw,
+    padT + ph - Math.min(1, Math.max(0, data[i] / max)) * ph
   ];
 
+  const indicators = [];
   for (const line of lines) {
-    ctx.beginPath();
-    for (let i = 0; i < n; i += step) {
-      const [x, y] = point(i, line.data);
-      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-    }
+    const trace = () => {
+      let firstX = 0, lastX = 0;
+      ctx.beginPath();
+      for (let i = start; i <= end; i += step) {
+        const [x, y] = point(i, line.data);
+        if (i === start) { ctx.moveTo(x, y); firstX = x; }
+        else ctx.lineTo(x, y);
+        lastX = x;
+      }
+      if ((end - start) % step !== 0) {
+        const [x, y] = point(end, line.data);
+        ctx.lineTo(x, y); lastX = x;
+      }
+      return { firstX, lastX };
+    };
+    const seg = trace();
     if (line.fill) {
       const grad = ctx.createLinearGradient(0, 0, 0, h);
       grad.addColorStop(0, rgba(line.color, 0.28));
       grad.addColorStop(1, rgba(line.color, 0.01));
       ctx.save();
-      ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath();
+      ctx.lineTo(seg.lastX, padT + ph); ctx.lineTo(seg.firstX, padT + ph); ctx.closePath();
       ctx.fillStyle = grad;
       ctx.fill();
       ctx.restore();
-      ctx.beginPath();
-      for (let i = 0; i < n; i += step) {
-        const [x, y] = point(i, line.data);
-        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-      }
+      trace();
     }
     ctx.strokeStyle = line.color;
     ctx.lineWidth = 1.8;
     ctx.lineJoin = "round";
     ctx.stroke();
 
-    const [lx, ly] = point(n - 1, line.data);
-    ctx.beginPath();
-    ctx.arc(lx, ly, 2.8, 0, 7);
-    ctx.fillStyle = line.color;
-    ctx.fill();
+    if (follow) {
+      const [lx, ly] = point(n - 1, line.data);
+      ctx.beginPath();
+      ctx.arc(lx, ly, 2.8, 0, 7);
+      ctx.fillStyle = line.color;
+      ctx.fill();
+    }
+
+    // latest-value dashed indicator
+    const v = line.data[n - 1];
+    const iy = padT + ph - Math.min(1, Math.max(0, v / max)) * ph;
+    ctx.save();
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = rgba(line.color, 0.5);
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(padL, iy); ctx.lineTo(w - padR, iy); ctx.stroke();
+    ctx.restore();
+    indicators.push({ label: fmtY(v), color: line.color, y: iy });
   }
 
-  ctx.fillStyle = muted;
+  // latest-value chips, anti-collision stacked
+  indicators.sort((a, b) => a.y - b.y);
+  let prevCy = -Infinity;
   ctx.font = "10px sans-serif";
-  ctx.fillText(opts.fmt ? opts.fmt(max) : max.toFixed(0), 4, 12);
+  for (const ind of indicators) {
+    const tw = ctx.measureText(ind.label).width;
+    let cy = Math.min(padT + ph - 15, Math.max(padT, ind.y - 7.5));
+    if (cy < prevCy + 16) cy = prevCy + 16;
+    prevCy = cy;
+    const cx = w - padR - tw - 12;
+    ctx.fillStyle = ind.color;
+    chipPath(ctx, cx - 5, cy, tw + 10, 15, 7);
+    ctx.fill();
+    ctx.fillStyle = "#fff";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(ind.label, cx, cy + 7.5);
+  }
 
-  let lx = 4;
+  // legend, top-right
+  ctx.font = "10px sans-serif";
+  let totalW = 0;
+  for (const line of lines) totalW += 10 + ctx.measureText(line.label).width + 12;
+  let lx = w - padR - totalW + 4;
   for (const line of lines) {
     ctx.beginPath();
-    ctx.arc(lx + 3, h - 7, 3, 0, 7);
+    ctx.arc(lx + 3, padT + 4, 3, 0, 7);
     ctx.fillStyle = line.color;
     ctx.fill();
     ctx.fillStyle = muted;
-    ctx.fillText(line.label, lx + 10, h - 4);
-    lx += 10 + ctx.measureText(line.label).width + 16;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(line.label, lx + 10, padT + 4);
+    lx += 10 + ctx.measureText(line.label).width + 12;
   }
 }
 
@@ -214,7 +343,49 @@ function drawAll() {
       { label: "Temp °C", data: series(s => s.gpu ? Math.max(0, s.gpu.temp_c) : 0), color: c.l2 }
     ], { max: 100, fmt: v => `${v.toFixed(0)}` });
   }
+  $("back-live").hidden = follow;
 }
+
+function bindViewport(canvas) {
+  let dragging = false, dragStartX = 0, dragStartEnd = 0;
+
+  canvas.addEventListener("pointerdown", e => {
+    if (samples.length < 2) return;
+    dragging = true;
+    dragStartX = e.clientX;
+    dragStartEnd = viewEnd ?? samples[samples.length - 1].ts;
+    canvas.setPointerCapture(e.pointerId);
+  });
+  canvas.addEventListener("pointermove", e => {
+    if (!dragging || samples.length < 2) return;
+    const w = canvas.clientWidth || 1;
+    if (viewSpan == null) viewSpan = Math.max(10, samples[samples.length - 1].ts - samples[0].ts);
+    viewEnd = clampEnd(dragStartEnd - (e.clientX - dragStartX) / w * viewSpan);
+    follow = viewEnd >= viewRange().last;
+    requestDraw();
+  });
+  canvas.addEventListener("pointerup", () => { dragging = false; });
+  canvas.addEventListener("pointercancel", () => { dragging = false; });
+  canvas.addEventListener("dblclick", resetView);
+  canvas.addEventListener("wheel", e => {
+    if (samples.length < 2) return;
+    e.preventDefault();
+    if (viewSpan == null) viewSpan = Math.max(10, samples[samples.length - 1].ts - samples[0].ts);
+    if (viewEnd == null) viewEnd = samples[samples.length - 1].ts;
+    const rect = canvas.getBoundingClientRect();
+    const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+    const anchor = (viewEnd - viewSpan) + frac * viewSpan;
+    const factor = e.deltaY > 0 ? 1.25 : 0.8;
+    const newSpan = clampSpan(viewSpan * factor);
+    viewEnd = clampEnd(anchor + (viewEnd - anchor) * (newSpan / viewSpan));
+    viewSpan = newSpan;
+    follow = viewEnd >= viewRange().last;
+    requestDraw();
+  }, { passive: false });
+}
+
+["chart-cpu", "chart-mem", "chart-disk", "chart-net", "chart-gpu"].forEach(id => bindViewport($(id)));
+$("back-live").onclick = resetView;
 
 async function refresh() {
   try {
@@ -286,6 +457,7 @@ async function saveConfig(includePort, quiet = false) {
     if (!quiet) toast("Settings applied");
     samples = [];
     lastTs = 0;
+    resetView();
     await refresh();
     return true;
   } catch (e) {

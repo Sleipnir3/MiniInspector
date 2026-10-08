@@ -61,7 +61,9 @@ h1 {
 
 #drives { margin: 14px 2px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 16px; }
 
-#charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; margin-top: 6px; }
+#charts { position: relative; display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; margin-top: 6px; }
+#back-live { position: absolute; top: 10px; right: 16px; z-index: 5; }
+#back-live[hidden] { display: none; }
 .chart {
   background: var(--card); border: 1px solid var(--border); border-radius: 14px;
   padding: 12px 16px 10px; box-shadow: var(--shadow);
@@ -70,7 +72,8 @@ h1 {
   font-size: 12px; font-weight: 600; margin: 0 0 8px; color: var(--muted);
   text-transform: uppercase; letter-spacing: .08em;
 }
-canvas { display: block; width: 100%; height: 160px; }
+canvas { display: block; width: 100%; height: 160px; touch-action: none; cursor: grab; }
+canvas:active { cursor: grabbing; }
 
 #settings {
   margin-top: 20px; background: var(--card); border: 1px solid var(--border);
