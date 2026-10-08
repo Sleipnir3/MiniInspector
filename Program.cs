@@ -7,6 +7,44 @@ var builder = WebApplication.CreateBuilder(args);
 var configPath = Path.Combine(builder.Environment.ContentRootPath, "config.json");
 var config = AppConfig.Load(configPath);
 
+bool createdNew;
+Mutex instanceMutex;
+try
+{
+    instanceMutex = new Mutex(true, @"Global\MiniInspector.SingleInstance", out createdNew);
+}
+catch (UnauthorizedAccessException)
+{
+    instanceMutex = new Mutex(true, "MiniInspector.SingleInstance", out createdNew);
+}
+using (instanceMutex)
+{
+    if (!createdNew)
+    {
+        var acquired = false;
+        if (args.Contains("--restarting"))
+        {
+            // spawned by a running instance that is about to exit; wait for the handoff
+            var deadline = DateTime.UtcNow.AddSeconds(15);
+            while (!acquired && DateTime.UtcNow < deadline)
+            {
+                try
+                {
+                    acquired = instanceMutex.WaitOne(500);
+                }
+                catch (AbandonedMutexException)
+                {
+                    acquired = true;
+                }
+            }
+        }
+        if (!acquired)
+        {
+            Console.Error.WriteLine("MiniInspector is already running.");
+            return 1;
+        }
+    }
+
 builder.WebHost.UseUrls(builder.Configuration.GetValue("Urls", $"http://127.0.0.1:{config.Port}"));
 builder.Logging.SetMinimumLevel(LogLevel.Information);
 
@@ -74,18 +112,20 @@ app.MapPost("/api/shutdown", (IHostApplicationLifetime lifetime) =>
     return Results.Json(new { ok = true, action = "shutdown" }, json);
 });
 
-for (var attempt = 0; ; attempt++)
-{
-    try
+    for (var attempt = 0; ; attempt++)
     {
-        app.Run();
-        break;
+        try
+        {
+            app.Run();
+            break;
+        }
+        catch (IOException) when (attempt < 5)
+        {
+            // port still held by the previous instance during restart
+            Thread.Sleep(1000);
+        }
     }
-    catch (IOException) when (attempt < 5)
-    {
-        // port still held by the previous instance during restart
-        Thread.Sleep(1000);
-    }
+    return 0;
 }
 
 static void SpawnSelf(string workingDirectory)
@@ -105,5 +145,7 @@ static void SpawnSelf(string workingDirectory)
     };
     foreach (var arg in cmdArgs.Skip(isDotnetHost ? 0 : 1))
         psi.ArgumentList.Add(arg);
+    if (!psi.ArgumentList.Contains("--restarting"))
+        psi.ArgumentList.Add("--restarting");
     Process.Start(psi);
 }
