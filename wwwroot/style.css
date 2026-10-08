@@ -59,7 +59,25 @@ h1 {
   margin: 4px 0 2px; letter-spacing: -.01em;
 }
 
-#drives { margin: 14px 2px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 16px; }
+#disk-capacity {
+  margin-top: 14px; background: var(--card); border: 1px solid var(--border);
+  border-radius: 14px; padding: 12px 16px 14px; box-shadow: var(--shadow);
+}
+#disk-capacity h2 {
+  font-size: 12px; font-weight: 600; margin: 0 0 10px; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .08em;
+}
+#drive-list { display: flex; flex-direction: column; gap: 10px; }
+.drive-row { display: flex; align-items: center; gap: 12px; }
+.drive-name { width: 36px; font-weight: 600; }
+.drive-row .usage { flex: 1; }
+.drive-stat { min-width: 230px; text-align: right; font-variant-numeric: tabular-nums; }
+.usage { height: 8px; border-radius: 4px; background: var(--border); overflow: hidden; }
+.usage .fill {
+  height: 100%; border-radius: 4px;
+  background: linear-gradient(90deg, var(--line1), var(--accent2));
+  transition: width .4s ease;
+}
 
 #charts { position: relative; display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; margin-top: 6px; }
 #back-live { position: absolute; top: 10px; right: 16px; z-index: 5; }

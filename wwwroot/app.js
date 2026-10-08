@@ -118,11 +118,42 @@ function renderInfo(status) {
   $("gpu-card").hidden = !gpuPresent;
   $("gpu-chart").hidden = !gpuPresent;
   if (gpuPresent) $("gpu-card").querySelector(".label").textContent = status.gpu ? `GPU · ${status.gpu}` : "GPU";
-  const drives = (status.drives || []).map(d => {
-    const pct = d.total_mb > 0 ? (100 * d.used_mb / d.total_mb).toFixed(0) : "?";
-    return `${d.name} ${fmtMb(d.used_mb)} / ${fmtMb(d.total_mb)} (${pct}%)`;
-  }).join("   ");
-  text("drives", drives);
+  renderDrives(status.drives || []);
+}
+
+let drives = [];
+
+function renderDrives(list) {
+  const changed = list.map(d => d.name).join() !== drives.map(d => d.name).join();
+  drives = list;
+  if (changed) {
+    const el = $("drive-list");
+    el.replaceChildren();
+    drives.forEach((d, i) => {
+      const row = document.createElement("div");
+      row.className = "drive-row";
+      const name = document.createElement("span");
+      name.className = "drive-name";
+      name.textContent = d.name;
+      const usage = document.createElement("div");
+      usage.className = "usage";
+      const fill = document.createElement("div");
+      fill.className = "fill";
+      fill.id = `drive-fill-${i}`;
+      usage.append(fill);
+      const stat = document.createElement("span");
+      stat.className = "drive-stat small muted";
+      stat.id = `drive-stat-${i}`;
+      row.append(name, usage, stat);
+      el.append(row);
+    });
+  }
+  drives.forEach((d, i) => {
+    const pct = d.total_mb > 0 ? 100 * d.used_mb / d.total_mb : 0;
+    const fill = $(`drive-fill-${i}`);
+    if (fill) fill.style.width = `${pct.toFixed(1)}%`;
+    text(`drive-stat-${i}`, `${fmtMb(d.used_mb)} / ${fmtMb(d.total_mb)} · ${pct.toFixed(1)}%`);
+  });
 }
 
 function series(fn) { return samples.map(fn); }
