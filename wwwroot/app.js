@@ -1,9 +1,12 @@
 "use strict";
 const $ = id => document.getElementById(id);
-const CAP = 3600;
+const CAP = 100000;
 let samples = [];
 let lastTs = 0;
 let booted = false;
+let gpuPresent = false;
+let cfgLoaded = false;
+let renderMs = 2000;
 
 document.documentElement.dataset.theme = localStorage.getItem("mini.theme") || "dark";
 $("theme").onclick = () => {
@@ -36,6 +39,15 @@ function fmtUptime(s) {
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
   return h ? `${h}h ${m}m` : `${m}m ${s % 60}s`;
 }
+function fmtRetention(min) {
+  if (min < 60) return `${min} min`;
+  const h = Math.floor(min / 60), m = min % 60;
+  return m ? `${h} h ${m} min` : `${h} h`;
+}
+function fmtInterval(ms) {
+  const s = ms / 1000;
+  return `${Number.isInteger(s) ? s : s.toFixed(1)} s`;
+}
 
 function updateCards(latest) {
   if (!latest) return;
@@ -57,8 +69,6 @@ function updateCards(latest) {
   }
 }
 
-let gpuPresent = false;
-
 function renderInfo(status) {
   text("info", `${status.machine} · ${status.os} · started ${new Date(status.started_at * 1000).toLocaleString()} · up ${fmtUptime(status.uptime_s)}`);
   text("cpu-name", `${status.cpu} (${status.cores} cores)`);
@@ -75,6 +85,15 @@ function renderInfo(status) {
 
 function series(fn) { return samples.map(fn); }
 
+function rgba(color, a) {
+  color = color.trim();
+  if (color.startsWith("#")) {
+    const n = parseInt(color.slice(1), 16);
+    return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+  }
+  return color;
+}
+
 function draw(canvas, lines, opts) {
   const dpr = window.devicePixelRatio || 1;
   const w = canvas.clientWidth, h = canvas.clientHeight;
@@ -85,11 +104,12 @@ function draw(canvas, lines, opts) {
   const ctx = canvas.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const css = getComputedStyle(document.documentElement);
+  const muted = css.getPropertyValue("--muted").trim();
   ctx.clearRect(0, 0, w, h);
 
   const n = samples.length;
   if (n < 2) {
-    ctx.fillStyle = css.getPropertyValue("--muted");
+    ctx.fillStyle = muted;
     ctx.font = "12px sans-serif";
     ctx.fillText("Collecting…", 8, h / 2);
     return;
@@ -97,10 +117,12 @@ function draw(canvas, lines, opts) {
 
   const t0 = samples[0].ts, t1 = samples[n - 1].ts;
   const span = Math.max(1, t1 - t0);
+  const step = Math.max(1, Math.floor(n / w));
+
   let max = opts.max;
   if (max == null) {
     max = 1;
-    for (const line of lines) for (const v of line.data) if (v > max) max = v;
+    for (const line of lines) for (let i = 0; i < n; i += step) if (line.data[i] > max) max = line.data[i];
     max *= 1.15;
   }
 
@@ -111,46 +133,72 @@ function draw(canvas, lines, opts) {
     ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
   }
 
+  const point = (i, data) => [
+    ((samples[i].ts - t0) / span) * w,
+    h - Math.min(1, Math.max(0, data[i] / max)) * (h - 4) - 2
+  ];
+
   for (const line of lines) {
     ctx.beginPath();
-    for (let i = 0; i < n; i++) {
-      const x = ((samples[i].ts - t0) / span) * w;
-      const y = h - Math.min(1, Math.max(0, line.data[i] / max)) * (h - 2) - 1;
+    for (let i = 0; i < n; i += step) {
+      const [x, y] = point(i, line.data);
       i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
     }
-    ctx.strokeStyle = line.color;
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
     if (line.fill) {
-      const xEnd = w, xStart = 0;
-      ctx.lineTo(xEnd, h); ctx.lineTo(xStart, h); ctx.closePath();
-      ctx.fillStyle = line.fill;
+      const grad = ctx.createLinearGradient(0, 0, 0, h);
+      grad.addColorStop(0, rgba(line.color, 0.28));
+      grad.addColorStop(1, rgba(line.color, 0.01));
+      ctx.save();
+      ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath();
+      ctx.fillStyle = grad;
       ctx.fill();
+      ctx.restore();
+      ctx.beginPath();
+      for (let i = 0; i < n; i += step) {
+        const [x, y] = point(i, line.data);
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
     }
+    ctx.strokeStyle = line.color;
+    ctx.lineWidth = 1.8;
+    ctx.lineJoin = "round";
+    ctx.stroke();
+
+    const [lx, ly] = point(n - 1, line.data);
+    ctx.beginPath();
+    ctx.arc(lx, ly, 2.8, 0, 7);
+    ctx.fillStyle = line.color;
+    ctx.fill();
   }
 
-  ctx.fillStyle = css.getPropertyValue("--muted");
+  ctx.fillStyle = muted;
   ctx.font = "10px sans-serif";
   ctx.fillText(opts.fmt ? opts.fmt(max) : max.toFixed(0), 4, 12);
-  ctx.fillText(lines.map(l => l.label).join("  "), 4, h - 4);
+
+  let lx = 4;
+  for (const line of lines) {
+    ctx.beginPath();
+    ctx.arc(lx + 3, h - 7, 3, 0, 7);
+    ctx.fillStyle = line.color;
+    ctx.fill();
+    ctx.fillStyle = muted;
+    ctx.fillText(line.label, lx + 10, h - 4);
+    lx += 10 + ctx.measureText(line.label).width + 16;
+  }
 }
 
 function colors() {
   const css = getComputedStyle(document.documentElement);
-  return {
-    l1: css.getPropertyValue("--line1").trim(),
-    l2: css.getPropertyValue("--line2").trim(),
-    fill: css.getPropertyValue("--fill").trim()
-  };
+  return { l1: css.getPropertyValue("--line1").trim(), l2: css.getPropertyValue("--line2").trim() };
 }
 
 function drawAll() {
   const c = colors();
   draw($("chart-cpu"), [
-    { label: "CPU", data: series(s => Math.max(0, s.cpu)), color: c.l1, fill: c.fill }
+    { label: "CPU", data: series(s => Math.max(0, s.cpu)), color: c.l1, fill: true }
   ], { max: 100, fmt: v => `${v.toFixed(0)}%` });
   draw($("chart-mem"), [
-    { label: "Memory", data: series(s => s.mem_total_mb > 0 ? 100 * s.mem_used_mb / s.mem_total_mb : 0), color: c.l1, fill: c.fill }
+    { label: "Memory", data: series(s => s.mem_total_mb > 0 ? 100 * s.mem_used_mb / s.mem_total_mb : 0), color: c.l1, fill: true }
   ], { max: 100, fmt: v => `${v.toFixed(0)}%` });
   draw($("chart-disk"), [
     { label: "Read", data: series(s => s.disk.read_bps), color: c.l1 },
@@ -162,7 +210,7 @@ function drawAll() {
   ], { fmt: fmtBytes });
   if (gpuPresent) {
     draw($("chart-gpu"), [
-      { label: "Core %", data: series(s => s.gpu ? Math.max(0, s.gpu.core_load) : 0), color: c.l1, fill: c.fill },
+      { label: "Core %", data: series(s => s.gpu ? Math.max(0, s.gpu.core_load) : 0), color: c.l1, fill: true },
       { label: "Temp °C", data: series(s => s.gpu ? Math.max(0, s.gpu.temp_c) : 0), color: c.l2 }
     ], { max: 100, fmt: v => `${v.toFixed(0)}` });
   }
@@ -187,5 +235,100 @@ async function refresh() {
   }
 }
 
+function fillConfig(cfg) {
+  renderMs = Math.max(1000, Math.min(5000, cfg.interval_ms));
+  $("cfg-port").value = cfg.port;
+  const retentionMin = Math.max(1, Math.min(1440, Math.round(cfg.retention_seconds / 60)));
+  $("cfg-retention").value = retentionMin;
+  text("cfg-retention-label", fmtRetention(retentionMin));
+  const interval = Math.max(200, Math.min(10000, cfg.interval_ms));
+  $("cfg-interval").value = interval;
+  text("cfg-interval-label", fmtInterval(interval));
+}
+
+$("cfg-retention").oninput = () => text("cfg-retention-label", fmtRetention(Number($("cfg-retention").value)));
+$("cfg-interval").oninput = () => text("cfg-interval-label", fmtInterval(Number($("cfg-interval").value)));
+
+async function loadConfig() {
+  try {
+    fillConfig(await api("/api/config"));
+    cfgLoaded = true;
+  } catch (_) {}
+}
+
+function toast(msg, error = false, ms = 3200) {
+  const el = document.createElement("div");
+  el.className = `toast${error ? " error" : ""}`;
+  el.textContent = msg;
+  $("toasts").append(el);
+  requestAnimationFrame(() => el.classList.add("show"));
+  setTimeout(() => {
+    el.classList.remove("show");
+    setTimeout(() => el.remove(), 300);
+  }, ms);
+}
+
+async function saveConfig(includePort, quiet = false) {
+  const body = {
+    retention_seconds: Number($("cfg-retention").value) * 60 || null,
+    interval_ms: Number($("cfg-interval").value) || null
+  };
+  if (includePort) body.port = Number($("cfg-port").value) || null;
+  try {
+    const r = await fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    const cfg = await r.json();
+    if (!r.ok) throw new Error(cfg.error || `HTTP ${r.status}`);
+    fillConfig(cfg);
+    if (!quiet) toast("Settings applied");
+    samples = [];
+    lastTs = 0;
+    await refresh();
+    return true;
+  } catch (e) {
+    if (!quiet) toast(`Failed to apply settings: ${e.message}`, true);
+    return false;
+  }
+}
+
+let autoSaveTimer = null;
+function autoSave() {
+  clearTimeout(autoSaveTimer);
+  autoSaveTimer = setTimeout(() => saveConfig(false), 300);
+}
+$("cfg-retention").onchange = autoSave;
+$("cfg-interval").onchange = autoSave;
+
+async function control(action) {
+  if (!confirm(action === "restart"
+    ? "Restart the server? Current settings (incl. port) will be applied."
+    : "Shut down the server?")) return;
+  let targetPort = null;
+  if (action === "restart") {
+    if (!await saveConfig(true, true)) {
+      toast("Could not save settings; restart aborted", true);
+      return;
+    }
+    targetPort = Number($("cfg-port").value) || null;
+  }
+  try { await fetch(`/api/${action}`, { method: "POST" }); } catch (_) {}
+  if (action === "restart") {
+    text("updated", "Restarting…");
+    toast("Restarting — settings applied");
+    if (targetPort && String(targetPort) !== location.port) {
+      setTimeout(() => { location.port = targetPort; }, 5000);
+    }
+  } else {
+    text("updated", "Server stopped");
+    toast("Server stopped");
+  }
+}
+$("restart").onclick = () => control("restart");
+$("shutdown").onclick = () => control("shutdown");
+
 window.addEventListener("resize", drawAll);
-(async function poll() { await refresh(); setTimeout(poll, 2000); })();
+loadConfig();
+(async function poll() { await refresh(); if (!cfgLoaded) await loadConfig(); setTimeout(poll, renderMs); })();

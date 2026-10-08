@@ -10,7 +10,11 @@
 <header>
   <h1>MiniInspector</h1>
   <span id="updated" class="muted">Connecting…</span>
-  <button id="theme" type="button">Theme</button>
+  <div class="actions">
+    <button id="restart" type="button" class="btn">Restart</button>
+    <button id="shutdown" type="button" class="btn danger">Shutdown</button>
+    <button id="theme" type="button" class="btn">Theme</button>
+  </div>
 </header>
 
 <section id="info" class="muted small"></section>
@@ -52,6 +56,27 @@
   <div class="chart"><h2>Network</h2><canvas id="chart-net"></canvas></div>
   <div class="chart" id="gpu-chart" hidden><h2>GPU % / Temp</h2><canvas id="chart-gpu"></canvas></div>
 </section>
+
+<section id="settings">
+  <h2>Settings</h2>
+  <div class="fields">
+    <label class="field">
+      <span>Port</span>
+      <input id="cfg-port" type="number" min="1" max="65535">
+    </label>
+    <label class="field slider">
+      <span>Retention window <b id="cfg-retention-label">60 min</b></span>
+      <input id="cfg-retention" type="range" min="1" max="1440" step="1" value="60">
+    </label>
+    <label class="field slider">
+      <span>Sample interval <b id="cfg-interval-label">1 s</b></span>
+      <input id="cfg-interval" type="range" min="200" max="10000" step="100" value="1000">
+    </label>
+  </div>
+  <div class="small muted" style="margin-top:10px">Sliders apply when released · port applies on Restart</div>
+</section>
+
+<div id="toasts"></div>
 
 <script src="app.js"></script>
 </body>
